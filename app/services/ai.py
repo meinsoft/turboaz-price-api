@@ -41,40 +41,53 @@ class PromptParser:
         """
         res = client.chat.completions.create(
             model=GROQ_MODEL,
+            response_format={"type": "json_object"},
             messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": s}],
             temperature=0.1,
         )
-        return json.loads(clean(res.choices[0].message.content))
+        return json.loads(res.choices[0].message.content)
 
-    def rank(self, arr, s, priority=None):
-        priority_instruction = ""
+    def explain(self, arr, user_prompt, priority=None):
+        priority_note = ""
         if priority == "mileage":
-            priority_instruction = "CRITICAL: Sort by mileage_km ascending. Cars with LOWEST mileage must be ranked first. Never rank a high mileage car above a low mileage car."
+            priority_note = "User cares most about LOW mileage. Mention km in every why."
         elif priority == "price":
-            priority_instruction = "CRITICAL: Sort by price_azn ascending. Cars with LOWEST price must be ranked first."
+            priority_note = "User cares most about LOW price. Mention price in every why."
         elif priority == "year":
-            priority_instruction = "CRITICAL: Sort by year descending. Newest cars must be ranked first."
+            priority_note = "User cares most about NEW cars. Mention year in every why."
 
+        ids = [x["turbo_id"] for x in arr]
         sys_msg = f"""
-        You are a car expert. Rank listings based on user request.
-        Return ONLY valid JSON array, no markdown, no code blocks.
-        Each item format: {{"turbo_id": "...", "rank": 1, "score": 85, "why": "...azerbaijani..."}}
-        The why field MUST be in Azerbaijani only.
-        {priority_instruction}
+        You are a car assistant writing short explanations in Azerbaijani.
+        {priority_note}
+        
+        CRITICAL RULES:
+        - You MUST return a why for EVERY turbo_id listed below: {ids}
+        - Return JSON object with key "results" as array
+        - Each item: {{"turbo_id": "...", "why": "..."}}
+        - why must be in Azerbaijani, max 10 words, mention a specific number (km, price or year)
+        - Do NOT skip any turbo_id
         """
-        user_msg = f"User request: {s}\nListings:\n{json.dumps(arr, ensure_ascii=False)}\nPick best 5. Write why in Azerbaijani only."
+        user_msg = f"User request: {user_prompt}\nCars:\n{json.dumps(arr, ensure_ascii=False)}"
         res = client.chat.completions.create(
             model=GROQ_MODEL,
+            response_format={"type": "json_object"},
             messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
-            temperature=0.2,
+            temperature=0.1,
         )
-        return json.loads(clean(res.choices[0].message.content))
+        parsed = json.loads(res.choices[0].message.content)
+        if "results" in parsed:
+            return parsed["results"]
+        for v in parsed.values():
+            if isinstance(v, list):
+                return v
+        return []
 
     def analyze(self, listing, similar):
         sys_msg = """
         You are a car price expert. Compare listing with similar ones.
-        Return ONLY valid JSON, no markdown, no code blocks.
-        All text fields must be in Azerbaijani language only.
+        Return ONLY valid JSON, no markdown.
+        All text fields must be in Azerbaijani.
         Format:
         {
             "verdict": "Ucuzdur" or "Normaldır" or "Bahalıdır",
@@ -88,7 +101,8 @@ class PromptParser:
         user_msg = f"Listing:\n{json.dumps(listing, ensure_ascii=False)}\nSimilar:\n{json.dumps(similar, ensure_ascii=False)}"
         res = client.chat.completions.create(
             model=GROQ_MODEL,
+            response_format={"type": "json_object"},
             messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
             temperature=0.2,
         )
-        return json.loads(clean(res.choices[0].message.content))
+        return json.loads(res.choices[0].message.content)
