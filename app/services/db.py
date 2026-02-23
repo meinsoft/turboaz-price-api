@@ -90,3 +90,38 @@ def get_similar(brand, model, year, limit=50):
             "mileage_km": r[5], "city": r[6], "url": r[7],
         })
     return arr
+
+
+def search_listings(brand, model, price_max, year_min, crashed_ok, limit=20):
+    c = conn()
+    cur = c.cursor()
+
+    q = "SELECT turbo_id, brand, model, year, price_azn, mileage_km, city, url FROM listings WHERE is_active = true"
+    params = []
+
+    if brand:
+        q += " AND brand = %s"
+        params.append(brand)
+    if price_max:
+        q += " AND price_azn <= %s"
+        params.append(price_max)
+    if year_min:
+        q += " AND year >= %s"
+        params.append(year_min)
+
+    q += " ORDER BY price_azn ASC LIMIT %s"
+    params.append(limit)
+
+    cur.execute(q, params)
+    rows = cur.fetchall()
+    cur.close()
+    c.close()
+
+    arr = []
+    for r in rows:
+        arr.append({
+            "turbo_id": r[0], "brand": r[1], "model": r[2],
+            "year": r[3], "price_azn": float(r[4]) if r[4] else None,
+            "mileage_km": r[5], "city": r[6], "url": r[7],
+        })
+    return arr

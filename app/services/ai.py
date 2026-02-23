@@ -33,10 +33,11 @@ class PromptParser:
             "priority": "price" or "mileage" or "year"
         }
         Rules:
-        - ucuz, büdcəyə uyğun, дешево → priority: price
+        - ucuz, büdcəyə uyğun, дешево, недорого → priority: price
         - vurğu ola bilər, vurulmuş, битый → crashed_ok: true
         - az yürüşlü, с небольшим пробегом → priority: mileage
         - yeni, свежий, новый → priority: year
+        - If user says недорого or ucuz but no number, set price_max to 20000
         """
         res = client.chat.completions.create(
             model=GROQ_MODEL,
@@ -45,12 +46,21 @@ class PromptParser:
         )
         return json.loads(clean(res.choices[0].message.content))
 
-    def rank(self, arr, s):
-        sys_msg = """
+    def rank(self, arr, s, priority=None):
+        priority_instruction = ""
+        if priority == "mileage":
+            priority_instruction = "CRITICAL: Sort by mileage_km ascending. Cars with LOWEST mileage must be ranked first. Never rank a high mileage car above a low mileage car."
+        elif priority == "price":
+            priority_instruction = "CRITICAL: Sort by price_azn ascending. Cars with LOWEST price must be ranked first."
+        elif priority == "year":
+            priority_instruction = "CRITICAL: Sort by year descending. Newest cars must be ranked first."
+
+        sys_msg = f"""
         You are a car expert. Rank listings based on user request.
         Return ONLY valid JSON array, no markdown, no code blocks.
-        Each item format: {"turbo_id": "...", "rank": 1, "score": 85, "why": "..."}
-        CRITICAL: The why field MUST be written in Azerbaijani language only. Never write English in why field.
+        Each item format: {{"turbo_id": "...", "rank": 1, "score": 85, "why": "...azerbaijani..."}}
+        The why field MUST be in Azerbaijani only.
+        {priority_instruction}
         """
         user_msg = f"User request: {s}\nListings:\n{json.dumps(arr, ensure_ascii=False)}\nPick best 5. Write why in Azerbaijani only."
         res = client.chat.completions.create(
