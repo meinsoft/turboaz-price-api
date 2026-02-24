@@ -38,6 +38,8 @@ class PromptParser:
         - az yürüşlü, с небольшим пробегом → priority: mileage
         - yeni, свежий, новый → priority: year
         - If user says недорого or ucuz but no number, set price_max to 20000
+        - ailə, семейный, rahat → set year_min to 2005
+        - If no mileage mentioned, leave null
         """
         res = client.chat.completions.create(
             model=GROQ_MODEL,

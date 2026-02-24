@@ -2,7 +2,10 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from app.services.ai import PromptParser
 from app.services.scraper import scrape_listings, BRAND_IDS
-from app.services.db import search_listings
+from app.services.db import save_listing_card
+from app.services.embedder import embed, embed_listing
+from concurrent.futures import ThreadPoolExecutor
+import numpy as np
 
 router = APIRouter()
 parser = PromptParser()
@@ -10,114 +13,133 @@ parser = PromptParser()
 
 class Req(BaseModel):
     prompt: str
-    force_scrape: bool = False
 
 
-def sort_by_priority(arr, priority):
-    if priority == "mileage":
-        arr.sort(key=lambda x: x.get("mileage_km") or 999999)
-    elif priority == "price":
-        arr.sort(key=lambda x: x.get("price_azn") or 999999)
+def cosine(a, b):
+    a, b = np.array(a), np.array(b)
+    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b)))
+
+
+def combined_score(car, priority, similarity):
+    km    = car.get("mileage_km") or 0
+    price = car.get("price_azn") or 99999
+    year  = car.get("year") or 2000
+
+    if priority == "price":
+        if price < 10000:   p = 1.0
+        elif price < 15000: p = 0.8
+        elif price < 20000: p = 0.6
+        else:               p = 0.3
+    elif priority == "mileage":
+        if km < 50000:    p = 1.0
+        elif km < 100000: p = 0.8
+        elif km < 200000: p = 0.5
+        else:             p = 0.2
     elif priority == "year":
-        arr.sort(key=lambda x: x.get("year") or 0, reverse=True)
-    return arr
-
-
-def calc_score(item, priority, rank):
-    km = item.get("mileage_km") or 0
-    price = item.get("price_azn") or 0
-    year = item.get("year") or 2000
-    base = 95 - (rank - 1) * 5
-
-    if priority == "mileage":
-        if km < 50000:    bonus = 0
-        elif km < 100000: bonus = -5
-        elif km < 200000: bonus = -15
-        else:             bonus = -25
-    elif priority == "price":
-        if price < 10000:  bonus = 0
-        elif price < 20000: bonus = -5
-        elif price < 40000: bonus = -15
-        else:               bonus = -25
-    elif priority == "year":
-        if year >= 2022:   bonus = 0
-        elif year >= 2018: bonus = -5
-        elif year >= 2014: bonus = -15
-        else:              bonus = -25
+        if year >= 2022:   p = 1.0
+        elif year >= 2018: p = 0.8
+        elif year >= 2014: p = 0.6
+        else:              p = 0.3
     else:
-        bonus = 0
+        p = 0.5
 
-    return min(max(base + bonus, 0), 100)
+    return round(similarity * 0.6 + p * 0.4, 4)
 
 
-def slim(item):
+def slim(car):
     return {
-        "turbo_id": item.get("turbo_id"),
-        "brand": item.get("brand"),
-        "model": item.get("model"),
-        "year": item.get("year"),
-        "price_azn": item.get("price_azn"),
-        "mileage_km": item.get("mileage_km"),
-        "city": item.get("city"),
+        "turbo_id":   car.get("turbo_id"),
+        "brand":      car.get("brand"),
+        "model":      car.get("model"),
+        "year":       car.get("year"),
+        "price_azn":  car.get("price_azn"),
+        "mileage_km": car.get("mileage_km"),
+        "city":       car.get("city"),
     }
 
 
 @router.post("/recommend")
 def recommend(req: Req):
-    parsed = parser.parse(req.prompt)
-
-    brand = parsed.get("brand")
-    model = parsed.get("model")
+    parsed    = parser.parse(req.prompt)
+    brand     = parsed.get("brand")
     price_max = parsed.get("price_max")
-    year_min = parsed.get("year_min")
-    crashed_ok = parsed.get("crashed_ok")
-    priority = parsed.get("priority")
+    year_min  = parsed.get("year_min")
+    crashed   = parsed.get("crashed_ok")
+    priority  = parsed.get("priority")
 
-    arr = search_listings(brand, None, price_max, year_min, crashed_ok)
+    params = {}
+    if brand and BRAND_IDS.get(brand):
+        params["brand_id"] = BRAND_IDS[brand]
+    if price_max:
+        params["price_max"] = price_max
+    if year_min:
+        params["year_min"] = year_min
+    if crashed:
+        params["crashed"] = True
 
-    if len(arr) < 5 or req.force_scrape:
-        params = {}
-        if brand:
-            bid = BRAND_IDS.get(brand)
-            if bid:
-                params["brand_id"] = bid
-        if price_max:
-            params["price_max"] = price_max
-        if crashed_ok:
-            params["crashed"] = True
-        arr = scrape_listings(params, max_pages=1)
-
-    if model:
-        filtered = []
-        for x in arr:
-            if x.get("model") and model.lower() in x["model"].lower():
-                filtered.append(x)
-        if filtered:
-            arr = filtered
-
-    seen = set()
-    unique = []
-    for x in arr:
-        if x["turbo_id"] not in seen:
-            seen.add(x["turbo_id"])
-            unique.append(x)
-    arr = unique
-
-    if not arr:
+    cars = scrape_listings(params, max_pages=2)
+    if not cars:
         raise HTTPException(status_code=404, detail="Elan tapılmadı")
 
-    arr = sort_by_priority(arr, priority)
-    top5 = arr[:5]
+    for car in cars:
+        save_listing_card(car)
 
-    for i, item in enumerate(top5):
-        item["rank"] = i + 1
-        item["score"] = calc_score(item, priority, i + 1)
+    query_vec = embed(req.prompt)
 
-    slim_list = [slim(x) for x in top5]
-    whys = parser.explain(slim_list, req.prompt, priority)
+    def process(car):
+        sim = cosine(query_vec, embed_listing(car))
+        car["similarity"] = round(sim, 3)
+        car["_rank_score"] = combined_score(car, priority, sim)
+        return car
+
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        cars = list(ex.map(process, cars))
+
+    if year_min:
+        by_year = [x for x in cars if (x.get("year") or 0) >= year_min]
+        if by_year:
+            cars = by_year
+
+    by_km = [x for x in cars if (x.get("mileage_km") or 0) <= 250000]
+    if by_km:
+        cars = by_km
+
+    if price_max:
+        by_price = [x for x in cars if (x.get("price_azn") or 0) <= price_max]
+        if by_price:
+            cars = by_price
+
+    if not brand:
+        cars = [x for x in cars if x["similarity"] >= 0.55]
+
+    if not brand:
+        cars = [x for x in cars if x["similarity"] >= 0.55]
+
+    seen, unique = set(), []
+    for car in cars:
+        if car["turbo_id"] not in seen:
+            seen.add(car["turbo_id"])
+            unique.append(car)
+    cars = unique
+
+    if not cars:
+        raise HTTPException(status_code=404, detail="Filtrlərə uyğun elan tapılmadı")
+
+    cars.sort(key=lambda x: x["_rank_score"], reverse=True)
+    top5 = cars[:5]
+
+    for i, car in enumerate(top5):
+        car["rank"]  = i + 1
+        car["score"] = min(round(car["_rank_score"] * 100), 100)
+        del car["_rank_score"]
+
+    whys    = parser.explain([slim(c) for c in top5], req.prompt, priority)
     why_map = {w["turbo_id"]: w["why"] for w in whys}
+    for car in top5:
+        car["why"] = why_map.get(car["turbo_id"], "")
 
-    for item in top5:
-        item["why"] = why_map.get(item["turbo_id"], "")
-
-    return {"prompt_parsed": parsed, "total_found": len(arr), "recommendations": top5}
+    return {
+        "prompt_parsed":   parsed,
+        "total_found":     len(cars),
+        "recommendations": top5
+    }

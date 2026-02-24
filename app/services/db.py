@@ -125,3 +125,40 @@ def search_listings(brand, model, price_max, year_min, crashed_ok, limit=20):
             "mileage_km": r[5], "city": r[6], "url": r[7],
         })
     return arr
+
+
+def save_embedding(turbo_id, vec):
+    c = conn()
+    cur = c.cursor()
+    cur.execute(
+        "UPDATE listings SET embedding = %s WHERE turbo_id = %s",
+        (vec, turbo_id)
+    )
+    c.commit()
+    cur.close()
+    c.close()
+
+
+def semantic_search(vec, limit=20):
+    c = conn()
+    cur = c.cursor()
+    cur.execute("""
+        SELECT turbo_id, brand, model, year, price_azn, mileage_km, city, url,
+               1 - (embedding <=> %s::vector) AS similarity
+        FROM listings
+        WHERE is_active = true AND embedding IS NOT NULL
+        ORDER BY embedding <=> %s::vector
+        LIMIT %s
+    """, (vec, vec, limit))
+    rows = cur.fetchall()
+    cur.close()
+    c.close()
+    arr = []
+    for r in rows:
+        arr.append({
+            "turbo_id": r[0], "brand": r[1], "model": r[2],
+            "year": r[3], "price_azn": float(r[4]) if r[4] else None,
+            "mileage_km": r[5], "city": r[6], "url": r[7],
+            "similarity": round(float(r[8]), 3),
+        })
+    return arr

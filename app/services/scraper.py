@@ -15,7 +15,7 @@ BRAND_IDS = {
 
 
 def build_url(params, page):
-    q = f"?page={page}&q%5Bcurrency%5D=azn"
+    q = f"?page={page}&q%5Bcurrency%5D=azn&q%5Bcategory%5D=1"
     if params.get("brand_id"):
         q += f"&q%5Bmake%5D%5B%5D={params['brand_id']}"
     if params.get("price_max"):
@@ -54,6 +54,7 @@ def parse_card(card):
         model = parts[1] if len(parts) > 1 else None
 
     year = mileage = engine = None
+    is_moto = False
     if attrs:
         arr = attrs.text.strip().split(",")
         try:
@@ -62,6 +63,8 @@ def parse_card(card):
             pass
         if len(arr) >= 2:
             engine = arr[1].strip()
+            if "sm3" in engine.lower():
+                return None
         if len(arr) >= 3:
             try:
                 mileage = int(arr[2].strip().replace(" ", "").replace("km", ""))
@@ -96,7 +99,7 @@ def scrape_listings(params, max_pages=1):
             break
         for card in cards:
             x = parse_card(card)
-            if x["turbo_id"]:
+            if x and x["turbo_id"]:
                 arr.append(x)
         print(f"Səhifə {p}: {len(cards)} elan tapıldı")
     return arr
