@@ -4,7 +4,7 @@ from app.services.ai import PromptParser
 from app.services.scraper import scrape_listings, BRAND_IDS
 from app.services.db import save_listing_card
 from app.services.embedder import embed, embed_listing
-from concurrent.futures import ThreadPoolExecutor
+
 import numpy as np
 
 router = APIRouter()
@@ -84,16 +84,16 @@ def recommend(req: Req):
     for car in cars:
         save_listing_card(car)
 
-    query_vec = embed(req.prompt)
+    from app.services.embedder import get_model, build_text
+    m         = get_model()
+    query_vec = m.encode(req.prompt, normalize_embeddings=True).tolist()
+    texts     = [build_text(car) for car in cars]
+    vecs      = m.encode(texts, normalize_embeddings=True, batch_size=32)
 
-    def process(car):
-        sim = cosine(query_vec, embed_listing(car))
-        car["similarity"] = round(sim, 3)
-        car["_rank_score"] = combined_score(car, priority, sim)
-        return car
-
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        cars = list(ex.map(process, cars))
+    for i, car in enumerate(cars):
+        sim              = cosine(query_vec, vecs[i].tolist())
+        car["similarity"]   = round(sim, 3)
+        car["_rank_score"]  = combined_score(car, priority, sim)
 
     if year_min:
         by_year = [x for x in cars if (x.get("year") or 0) >= year_min]
