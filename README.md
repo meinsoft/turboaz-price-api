@@ -251,23 +251,13 @@ http://localhost:8000/docs
 
 | Step | Time |
 |---|---|
-| AI prompt parse (Groq) | ~3 sec |
-| Live scrape (2 pages) | ~3 sec |
-| Embedding + similarity (parallel) | ~2 sec |
-| AI explain top 5 (Groq) | ~20 sec |
-| **Total** | **~30 sec** |
+| AI prompt parse (Groq) | ~4 sec |
+| Live scrape (2 pages) | ~5 sec |
+| Batch embedding + similarity | ~2 sec |
+| **Total** | **~11 sec** |
 
-Bottleneck is Groq API inference. Scraping and embedding are fast.
+Model is preloaded inside the Docker image — no download on startup.
 
----
-
-## Roadmap
-
-- [ ] Celery background tasks
-- [ ] Redis cache for repeated prompts
-- [ ] Price trend charts
-- [ ] Telegram bot interface
-- [ ] Monthly market reports
 
 ---
 
