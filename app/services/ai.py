@@ -50,40 +50,32 @@ class PromptParser:
         return json.loads(res.choices[0].message.content)
 
     def explain(self, arr, user_prompt, priority=None):
-        results = []
-        for car in arr:
-            tid   = car.get("turbo_id")
-            price = car.get("price_azn") or 0
-            km    = car.get("mileage_km")
-            year  = car.get("year") or 0
-            sim   = car.get("similarity") or 0
+        priority_note = ""
+        if priority == "mileage":
+            priority_note = "User cares most about LOW mileage. Mention km in every why."
+        elif priority == "price":
+            priority_note = "User cares most about LOW price. Mention price in every why."
+        elif priority == "year":
+            priority_note = "User cares most about NEW cars. Mention year in every why."
 
-            if priority == "price":
-                if price < 8000:    why = f"{int(price)} AZN — çox ucuzdur"
-                elif price < 15000: why = f"{int(price)} AZN — əlverişli qiymətdir"
-                elif price < 25000: why = f"{int(price)} AZN — orta qiymət"
-                else:               why = f"{int(price)} AZN — yuxarı qiymət"
-            elif priority == "mileage":
-                if km is None:      why = f"{year} il — yürüşü bilinmir"
-                elif km < 50000:    why = f"{km:,} km — çox az yürüşlüdür"
-                elif km < 100000:   why = f"{km:,} km — az yürüşlüdür"
-                elif km < 200000:   why = f"{km:,} km — orta yürüş"
-                else:               why = f"{km:,} km — yürüşü çoxdur"
-            elif priority == "year":
-                if year >= 2022:    why = f"{year} il — çox təzədir"
-                elif year >= 2018:  why = f"{year} il — təzədir"
-                elif year >= 2014:  why = f"{year} il — orta yaş"
-                else:               why = f"{year} il — köhnədir"
-            else:
-                if sim >= 0.75:     why = f"sorğuya çox uyğundur, {year} il"
-                elif sim >= 0.6:    why = f"sorğuya uyğundur, {year} il"
-                else:               why = f"{year} il, {int(price)} AZN"
-
-            results.append({"turbo_id": tid, "why": why})
-        return results
-        for v in parsed.values():
-            if isinstance(v, list):
-                return v
+        ids = [x["turbo_id"] for x in arr]
+        sys_msg = (
+            "You are a car assistant writing short explanations in Azerbaijani. "
+            + priority_note
+            + f" Return JSON with key results as array. Each item: turbo_id and why. "
+            + f"Cover ALL of these ids: {ids}. "
+            + "why: Azerbaijani, max 15 words, specific details, natural tone."
+        )
+        user_msg = f"User request: {user_prompt}\nCars:\n{json.dumps(arr, ensure_ascii=False)}"
+        res = client.chat.completions.create(
+            model=GROQ_MODEL,
+            response_format={"type": "json_object"},
+            messages=[{"role": "system", "content": sys_msg}, {"role": "user", "content": user_msg}],
+            temperature=0.3,
+        )
+        parsed = json.loads(res.choices[0].message.content)
+        if "results" in parsed:
+            return parsed["results"]
         return []
 
     def analyze(self, listing, similar):
