@@ -2,7 +2,7 @@
 
 # TurboAZ Price Analyzer
 
-**AI-powered car price analysis for Azerbaijan market**
+**AI-powered car search and price analysis for Azerbaijan market**
 
 [![Python](https://img.shields.io/badge/Python-3.11-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://python.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
@@ -18,28 +18,31 @@
 
 ## What is this?
 
-A REST API that understands natural language car requests in Azerbaijani or Russian, scrapes **live** listings from Turbo.az, ranks them using semantic embeddings, and uses AI to explain each result.
+Searching for a car on Turbo.az is hard — filters are complex, comparing prices to the market takes time, and knowing whether a listing is actually a good deal requires experience.
+
+This API removes all of that friction. You write what you want in plain Azerbaijani or Russian, and the system figures out the rest.
 
 ```
-User types:  "bmw 520 istiyirem ucuz, biraz vurgu ola biler"
-                              |
-                              v
-                   AI parses the request
-                              |
-                              v
-                   Turbo.az scraped live
-                              |
-                              v
-              Each listing embedded + similarity scored
-                              |
-                              v
-                   AI explains top 5 results
-                              |
-                              v
-                    Top 5 cars + why
+"bmw 520 istiyirem ucuz, biraz vurgu ola biler"
+                    |
+                    v
+        AI understands the request
+        (brand, price, priority, crashed_ok...)
+                    |
+                    v
+        Turbo.az scraped live
+        (always fresh — cars sell fast)
+                    |
+                    v
+        Each listing ranked by semantic similarity
+        + market-normalized price/mileage/year score
+                    |
+                    v
+        AI explains each result in natural Azerbaijani
+                    |
+                    v
+        Top results returned with score + why
 ```
-
-> Data is always fresh — listings are scraped in real time on every request because Turbo.az cars sell fast.
 
 ---
 
@@ -48,6 +51,8 @@ User types:  "bmw 520 istiyirem ucuz, biraz vurgu ola biler"
 ### `POST /api/recommend`
 
 Send a plain text request. Get the best matching cars.
+
+Understands 20+ parameters from natural language — brand, model, price range, mileage, year, color, region, fuel type, gearbox, body type, drive type, number of owners, extras (leather, sunroof, parking sensors...), loan, barter, dealer/private, and more.
 
 **Request:**
 ```bash
@@ -73,21 +78,32 @@ curl -X POST http://localhost:8000/api/recommend \
       "year": 2014,
       "price_azn": 29500.0,
       "mileage_km": 127000,
-      "city": "Baki",
+      "city": "Bakı",
       "similarity": 0.81,
       "rank": 1,
       "score": 90,
-      "why": "29500 AZN ucuzdur, vurğu var"
+      "why": "Puluna dəyər, bu qiymətə belə tapılmaz"
     }
   ]
 }
+```
+
+**Example prompts:**
+```
+bmw 520 ucuz vurugu ola biler
+mercedes e class 2015-2018 arasi avtomat
+toyota 15000 azne qeder az gedish
+honda civic dilerden deri salon lyuklu
+7 yerli suv tam ötürücü 2020 uzeri
 ```
 
 ---
 
 ### `POST /api/analyze`
 
-Send a Turbo.az link. Get a full price analysis.
+Send a Turbo.az listing URL. Get a full market price analysis.
+
+Scrapes the listing, finds similar cars on the market, calculates the average price, and returns an honest verdict — cheap, fair, or overpriced — with specific reasons.
 
 **Request:**
 ```bash
@@ -105,16 +121,16 @@ curl -X POST http://localhost:8000/api/analyze \
     "year": 2025,
     "price_azn": 167600.0,
     "mileage_km": 0,
-    "city": "Baki"
+    "city": "Bakı"
   },
   "similar_count": 12,
   "ai": {
     "verdict": "Normaldır",
-    "score": 50,
-    "price_diff_percent": 0.0,
-    "summary": "This car is priced fairly compared to the market.",
-    "pros": ["Brand new", "0 km", "Electric engine"],
-    "cons": ["High price range"]
+    "score": 60,
+    "price_diff_percent": 1.2,
+    "summary": "2025-ci il BMW iX, 0 km. Oxşar elanlarla müqayisədə qiymət normaldır.",
+    "pros": ["Qiymət bazar ortalamasına uyğundur", "0 km — yenidir"],
+    "cons": ["2025 modeli üçün bazar çox məhduddur"]
   }
 }
 ```
@@ -136,15 +152,15 @@ curl -X POST http://localhost:8000/api/analyze \
 |                                                       |
 |    /api/recommend              /api/analyze           |
 |          |                           |                |
-|    parse prompt              scrape detail page       |
+|    parse prompt              scrape listing page      |
 |    (Groq LLaMA)                      |                |
 |          |                     save to DB             |
 |    scrape live listings              |                |
 |          |                     find similar cars      |
-|    embed + similarity rank           |                |
-|    (parallel, 8 threads)       AI verdict             |
+|    batch embed + rank                |                |
+|    (similarity + market score) AI verdict             |
 |          |                           |                |
-|    AI explain top 5                  |                |
+|    AI explain in Azerbaijani         |                |
 |          +-----------------+--------+                 |
 |                            v                         |
 |                      JSON response                    |
@@ -161,14 +177,26 @@ curl -X POST http://localhost:8000/api/analyze \
 
 ---
 
+## Ranking Logic
+
+Results are not sorted by price or date. Each car gets a score based on:
+
+- **Semantic similarity** — how well the listing matches the request (via multilingual embeddings)
+- **Market-normalized score** — price, mileage, and year compared to all other results in the same pool
+- **Intent score** — if the user cares about price, mileage, or year specifically, that factor is weighted higher
+
+This means a 2012 car with 200,000 km won't outrank a 2018 car just because it's cheaper — unless the user explicitly asks for the cheapest option.
+
+---
+
 ## Tech Stack
 
 | Tool | What it does |
 |---|---|
 | **FastAPI** | REST API framework |
 | **PostgreSQL + pgvector** | Stores listings and price history |
-| **Groq + LLaMA 3.3 70B** | Parses prompts, explains results, analyzes prices |
-| **sentence-transformers** | Multilingual embeddings for semantic ranking |
+| **Groq + LLaMA 3.3 70B** | Parses prompts, explains results in Azerbaijani, analyzes prices |
+| **sentence-transformers** | Multilingual embeddings (`paraphrase-multilingual-MiniLM-L12-v2`) |
 | **BeautifulSoup4** | Scrapes Turbo.az listing pages live |
 | **Docker Compose** | Runs everything with one command |
 
@@ -188,10 +216,9 @@ turboaz-price-api/
 |   |   |-- scraper.py       # live Turbo.az scraper
 |   |   |-- embedder.py      # sentence-transformers wrapper
 |   |   |-- db.py            # PostgreSQL queries
-|   |   +-- ai.py            # PromptParser + explain
-|   +-- models/
-|       |-- listing.py
-|       +-- task.py
+|   |   +-- ai.py            # PromptParser + explain + analyze
+|   +-- bot/
+|       +-- main.py          # Telegram bot (optional)
 |-- docker-compose.yml
 |-- Dockerfile
 |-- requirements.txt
@@ -208,7 +235,7 @@ price_history   ->  price changes over time
 tasks           ->  async job tracking
 ```
 
-> Search results are always live-scraped. DB is used only for price trend analysis in `/api/analyze`.
+> Search results are always live-scraped — never served from DB cache. DB is used only for price trend analysis in `/api/analyze`.
 
 ---
 
@@ -252,12 +279,22 @@ http://localhost:8000/docs
 | Step | Time |
 |---|---|
 | AI prompt parse (Groq) | ~4 sec |
-| Live scrape (2 pages) | ~5 sec |
+| Live scrape (2–5 pages) | ~5 sec |
 | Batch embedding + similarity | ~2 sec |
-| **Total** | **~11 sec** |
+| AI explain (Groq) | ~3 sec |
+| **Total** | **~11–14 sec** |
 
-Model is preloaded inside the Docker image — no download on startup.
+The embedding model is preloaded inside the Docker image at build time — no download on startup or per-request.
 
+---
+
+## Roadmap
+
+- [ ] Telegram bot integration
+- [ ] Redis cache for repeated queries
+- [ ] Async parallel scraping
+- [ ] Price trend charts
+- [ ] Monthly market reports
 
 ---
 
