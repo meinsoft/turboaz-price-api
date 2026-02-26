@@ -3,7 +3,7 @@ from pydantic import BaseModel
 from app.services.ai import PromptParser
 from app.services.scraper import scrape_listings, BRAND_IDS, COLOR_IDS
 from app.services.db import save_listing_card
-from app.services.embedder import get_model, build_text
+from app.services.embedder import get_model, build_text, hybrid_rank, embed_query
 
 import numpy as np
 
@@ -36,22 +36,17 @@ def value_score(car, pool):
     kms    = [c["mileage_km"] for c in pool if c.get("mileage_km") and c["mileage_km"] > 0]
     years  = [c["year"]       for c in pool if c.get("year")]
 
-    # Bazara gore normalize
-    p_rank  = pct(price, prices)   # 0=en ucuz, 1=en baha
+    p_rank  = pct(price, prices)
     km_rank = pct(km, kms) if km and km > 0 else 0.5
-    yr_rank = pct(year, years)     # 0=en kohne, 1=en yeni
+    yr_rank = pct(year, years)
 
-    # Value for money: qiymet/km orani
-    # Ucuz + az km = yuksek value, baha + cox km = asagi value
     vfm = (1 - p_rank) * 0.5 + (1 - km_rank) * 0.5
 
-    # Il bonus/cerimesi — 2010-dan kicik keskin dusuq
     if year >= 2018:   yr_bonus = 1.0
     elif year >= 2013: yr_bonus = 0.75
     elif year >= 2010: yr_bonus = 0.45
     else:              yr_bonus = 0.15
 
-    # Crash cerimesi
     crash_mul = 0.75 if crash else 1.0
 
     return round(vfm * 0.65 + yr_rank * 0.25 * yr_bonus + (0 if crash else 0.10), 4) * crash_mul
@@ -111,14 +106,14 @@ def recommend(req: Req):
     price_min = parsed.get("price_min")
     year_min  = parsed.get("year_min")
     year_max  = parsed.get("year_max")
-    crashed     = parsed.get("crashed_ok")
-    priority    = parsed.get("priority")
-    color       = parsed.get("color")
-    region      = parsed.get("region")
-    fuel_type   = parsed.get("fuel_type")
-    gear        = parsed.get("gear")
-    body_type   = parsed.get("body_type")
-    market      = parsed.get("market")
+    crashed      = parsed.get("crashed_ok")
+    priority     = parsed.get("priority")
+    color        = parsed.get("color")
+    region       = parsed.get("region")
+    fuel_type    = parsed.get("fuel_type")
+    gear         = parsed.get("gear")
+    body_type    = parsed.get("body_type")
+    market       = parsed.get("market")
     not_painted  = parsed.get("not_painted")
     km_min       = parsed.get("km_min")
     km_max       = parsed.get("km_max")
@@ -192,10 +187,7 @@ def recommend(req: Req):
 
     if model:
         ml = model.lower().strip()
-        # "S Class" → "s" ile baslayan modeller: S 350, S 500 vs
-        # "E Class" → "e" ile baslayan
-        # "GLE Class" → "gle" ile baslayan
-        first_word = ml.split()[0] if ml.split() else ml
+        first_word    = ml.split()[0] if ml.split() else ml
         full_no_space = ml.replace(" ", "")
 
         def model_match(car_model):
@@ -203,13 +195,10 @@ def recommend(req: Req):
                 return False
             cm = car_model.lower().strip()
             cm_no_space = cm.replace(" ", "")
-            # Tam uygunluk
             if full_no_space in cm_no_space:
                 return True
-            # "X Class" → ilk sozle baslayan
             if "class" in ml and cm.startswith(first_word):
                 return True
-            # Ilk soz uygunlugu: "S" → "S 350", "S 500"
             if cm.startswith(first_word + " ") or cm == first_word:
                 return True
             return False
@@ -238,7 +227,6 @@ def recommend(req: Req):
         if filtered:
             cars = filtered
 
-    # 2010-dan kicik elanlar varsayilan olaraq gizlet, crash_ok olmasa
     if not crashed:
         filtered = [c for c in cars if (c.get("year") or 0) >= 2010]
         if filtered:
@@ -249,12 +237,16 @@ def recommend(req: Req):
         cars = filtered
 
     m         = get_model()
-    query_vec = m.encode(req.prompt, normalize_embeddings=True).tolist()
-    texts     = [build_text(c) for c in cars]
+    query_vec = embed_query(req.prompt)
+    texts     = [f"passage: {build_text(c)}" for c in cars]
     vecs      = m.encode(texts, normalize_embeddings=True, batch_size=32)
 
+    vec_sims = [cosine(query_vec, vecs[i].tolist()) for i in range(len(cars))]
+    hybrid   = hybrid_rank(req.prompt, cars, vec_sims)
+
     for i, car in enumerate(cars):
-        car["similarity"] = round(cosine(query_vec, vecs[i].tolist()), 3)
+        car["similarity"] = round(vec_sims[i], 3)
+        car["_hybrid"]    = hybrid.get(i, 0)
 
     if not brand and not color and not body_type and not fuel_type and not gear:
         cars = [c for c in cars if c["similarity"] >= 0.45]
@@ -271,7 +263,9 @@ def recommend(req: Req):
         raise HTTPException(status_code=404, detail="Filtrlərə uyğun elan tapılmadı")
 
     for car in cars:
-        car["_score"] = score_car(car, cars, priority, car["similarity"])
+        base          = score_car(car, cars, priority, car["similarity"])
+        h             = car.pop("_hybrid", 0)
+        car["_score"] = round(base * 0.85 + h * 0.15, 4)
 
     cars.sort(key=lambda x: x["_score"], reverse=True)
     top = cars[:10]
