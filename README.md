@@ -288,15 +288,6 @@ The embedding model is preloaded inside the Docker image at build time — no do
 
 ---
 
-## Roadmap
-
-- [ ] Telegram bot integration
-- [ ] Redis cache for repeated queries
-- [ ] Async parallel scraping
-- [ ] Price trend charts
-- [ ] Monthly market reports
-
----
 
 <div align="center">
 
